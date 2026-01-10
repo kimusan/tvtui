@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Terminal UI for IPTV with EPG browsing"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
+license = { text = "MIT" }
 authors = [{ name = "tvTUI Contributors" }]
 keywords = ["tui", "iptv", "epg", "terminal"]
 classifiers = [
