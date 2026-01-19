@@ -822,6 +822,30 @@ def show_popup(stdscr: "curses._CursesWindow", title: str, message: str) -> None
     stdscr.get_wch()
 
 
+def render_splash(stdscr: "curses._CursesWindow", message: str, spinner_char: str) -> None:
+    stdscr.erase()
+    height, width = stdscr.getmaxyx()
+    logo = [
+        "$$$$$$$$\\      $$$$$$$$\\ $$\\   $$\\ $$$$$$\\ ",
+        "\\__$$  __|     \\__$$  __|$$ |  $$ |\\_$$  _|",
+        "   $$ |$$\\    $$\\ $$ |   $$ |  $$ |  $$ |  ",
+        "   $$ |\\$$\\  $$  |$$ |   $$ |  $$ |  $$ |  ",
+        "   $$ | \\$$\\$$  / $$ |   $$ |  $$ |  $$ |  ",
+        "   $$ |  \\$$$  /  $$ |   $$ |  $$ |  $$ |  ",
+        "   $$ |   \\$  /   $$ |   \\$$$$$$  |$$$$$$\\ ",
+        "   \\__|    \\_/    \\__|    \\______/ \\______|",
+    ]
+    start_y = max(1, (height // 2) - (len(logo) // 2) - 2)
+    for i, line in enumerate(logo):
+        x = max(0, (width - len(line)) // 2)
+        stdscr.addnstr(start_y + i, x, line, width - 1, curses.A_BOLD)
+    version_line = f"tvTUI {VERSION}"
+    stdscr.addnstr(start_y + len(logo) + 1, max(0, (width - len(version_line)) // 2), version_line, width - 1)
+    msg = f"{message} {spinner_char}"
+    stdscr.addnstr(start_y + len(logo) + 3, max(0, (width - len(msg)) // 2), msg, width - 1)
+    stdscr.refresh()
+
+
 def filter_channels(channels: List[Channel], query: str, programs: Dict[str, Program]) -> List[Channel]:
     if not query:
         return channels
@@ -956,6 +980,27 @@ def run_tui(
         top_index = 0
         mode = "channels"
 
+        def splash_with_spinner(message: str, func):
+            result = {"value": None, "error": None}
+
+            def target():
+                try:
+                    result["value"] = func()
+                except Exception as exc:
+                    result["error"] = exc
+
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            i = 0
+            while thread.is_alive():
+                render_splash(stdscr, message, spinner[i % len(spinner)])
+                time.sleep(0.1)
+                i += 1
+            thread.join()
+            if result["error"]:
+                raise result["error"]
+            return result["value"]
+
         def fetch_with_spinner(message: str, func):
             nonlocal status_message
             result = {"value": None, "error": None}
@@ -1004,18 +1049,21 @@ def run_tui(
         elif categories_only:
             mode = "categories"
 
-        ok, err = update_epg_cache(epg_cache, epg_url)
-        programs = build_program_map(epg_cache)
-        epg_index = build_epg_index(epg_cache)
-        if content_mode == "tv" and xtream_enabled and xtream_use_for_tv:
-            channels, chan_err = fetch_with_spinner(
-                "Loading Xtream TV",
-                lambda: xtream_get_streams(
+        def initial_load():
+            ok, err = update_epg_cache(epg_cache, epg_url)
+            programs = build_program_map(epg_cache)
+            epg_index = build_epg_index(epg_cache)
+            if content_mode == "tv" and xtream_enabled and xtream_use_for_tv:
+                channels, chan_err = xtream_get_streams(
                     xtream_base_url, xtream_username, xtream_password, "live"
-                ),
-            )
-        else:
-            channels, chan_err = get_iptv_channels(channels_cache, base_m3u_url)
+                )
+            else:
+                channels, chan_err = get_iptv_channels(channels_cache, base_m3u_url)
+            return ok, err, programs, epg_index, channels, chan_err
+
+        ok, err, programs, epg_index, channels, chan_err = splash_with_spinner(
+            "Loading", initial_load
+        )
         if not channels:
             channels = get_fallback_channels()
             if chan_err:
