@@ -185,13 +185,13 @@ def parse_m3u(content: str) -> Iterable[Channel]:
         if line.startswith("#EXTINF"):
             tvg_id = ""
             name = ""
-            m_name = re.search(r'tvg-name="([^"]+)"', line)
+            m_name = re.search(r'tvg-name="([^"]+)"', line, re.IGNORECASE)
             if m_name:
                 name = m_name.group(1)
             else:
                 if "," in line:
                     name = line.split(",", 1)[1].strip()
-            m_id = re.search(r'tvg-id="([^"]+)"', line)
+            m_id = re.search(r'tvg-id="([^"]+)"', line, re.IGNORECASE)
             if m_id:
                 tvg_id = m_id.group(1)
         elif line.startswith("http") and name:
