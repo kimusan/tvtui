@@ -39,6 +39,7 @@ tvtui --categories
 - `f` toggle favorites view
 - `F` add/remove favorite
 - `c` categories
+- `m` content mode (tv/movie/series)
 - `s` sort (default/name/category)
 - `r` refresh channels/EPG
 - `/` search mode
@@ -72,9 +73,20 @@ Config file defaults to `~/.config/tvtui/config.json`.
   "mpv_subs_on_args": ["--sub-visibility=yes", "--sid=auto"],
   "mpv_subs_off_args": ["--sub-visibility=no", "--sid=no"],
   "vlc_sub_track": 1,
-  "subs_enabled_default": false
+  "subs_enabled_default": false,
+  "xtream_base_url": "http://xtreamcode.ex:8080",
+  "xtream_username": "Mike",
+  "xtream_password": "1234",
+  "xtream_use_for_tv": true
 }
 ```
+
+### Xtream API
+
+If `xtream_base_url`, `xtream_username`, and `xtream_password` are set, use `m`
+to toggle content mode between live TV, movies, and series. The TV mode uses
+Xtream live streams when `xtream_use_for_tv` is true; otherwise it falls back
+to the M3U source.
 
 ## Requirements
 
