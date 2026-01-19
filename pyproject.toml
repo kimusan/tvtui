@@ -26,3 +26,4 @@ tvtui = "tvtui:main"
 
 [tool.setuptools]
 py-modules = ["tvtui"]
+license-files = []

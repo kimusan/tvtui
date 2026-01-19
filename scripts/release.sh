@@ -46,7 +46,7 @@ if changelog.exists():
 PY
 
 python3 -m pip install --upgrade build twine --break-system-packages
-rm -rf dist
+rm -rf dist build tvtui.egg-info
 python3 -m build
 python3 -m twine upload --repository "${REPO}" dist/*
 
