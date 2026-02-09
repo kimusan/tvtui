@@ -77,7 +77,9 @@ Config file defaults to `~/.config/tvtui/config.json`.
   "xtream_base_url": "http://xtreamcode.ex:8080",
   "xtream_username": "Mike",
   "xtream_password": "1234",
-  "xtream_use_for_tv": true
+  "xtream_use_for_tv": true,
+  "epg_fuzzy_match": true,
+  "epg_fuzzy_threshold": 0.85
 }
 ```
 

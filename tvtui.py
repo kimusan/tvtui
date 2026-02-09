@@ -14,6 +14,7 @@ import time
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+import difflib
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -157,6 +158,67 @@ def build_program_map(epg_cache: str, now: Optional[dt.datetime] = None) -> Dict
         return {}
     return programs
 
+
+def build_epg_channels(epg_cache: str) -> List[Tuple[str, str]]:
+    if not os.path.exists(epg_cache):
+        return []
+    channels = []
+    try:
+        for _, elem in ET.iterparse(epg_cache, events=("end",)):
+            if elem.tag != "channel":
+                continue
+            channel_id = (elem.attrib.get("id") or "").strip()
+            display = (elem.findtext("display-name") or "").strip()
+            if channel_id:
+                channels.append((channel_id, display))
+            elem.clear()
+    except ET.ParseError:
+        return []
+    return channels
+
+
+def normalize_name(value: str) -> str:
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", "", value)
+    return value
+
+
+def repair_favorites_with_epg(
+    favorites: List[Channel],
+    epg_cache: str,
+    fuzzy: bool,
+    threshold: float,
+) -> Tuple[List[Channel], bool]:
+    if not favorites:
+        return favorites, False
+    epg_channels = build_epg_channels(epg_cache)
+    if not epg_channels:
+        return favorites, False
+    id_map = {normalize_name(cid): cid for cid, _ in epg_channels}
+    name_map = {normalize_name(name): cid for cid, name in epg_channels if name}
+    updated = []
+    changed = False
+    for fav in favorites:
+        if fav.tvg_id:
+            updated.append(fav)
+            continue
+        key = normalize_name(fav.name)
+        matched = None
+        if key in id_map:
+            matched = id_map[key]
+        elif key in name_map:
+            matched = name_map[key]
+        elif fuzzy:
+            candidates = list(name_map.keys()) + list(id_map.keys())
+            best = difflib.get_close_matches(key, candidates, n=1, cutoff=threshold)
+            if best:
+                matched = name_map.get(best[0]) or id_map.get(best[0])
+        if matched:
+            updated.append(Channel(name=fav.name, url=fav.url, tvg_id=matched, kind=fav.kind))
+            changed = True
+        else:
+            updated.append(fav)
+    return updated, changed
 
 def build_epg_index(epg_cache: str, now: Optional[dt.datetime] = None) -> Dict[str, List[Program]]:
     if not os.path.exists(epg_cache):
@@ -942,6 +1004,8 @@ def run_tui(
     xtream_username: str,
     xtream_password: str,
     xtream_use_for_tv: bool,
+    epg_fuzzy_match: bool,
+    epg_fuzzy_threshold: float,
 ) -> bool:
     player = Player(player_config)
     result = {"help_visible": show_help_panel}
@@ -1072,6 +1136,11 @@ def run_tui(
             show_popup(stdscr, "Network Error", err)
 
         favorites = load_favorites(favorites_file)
+        favorites, fav_changed = repair_favorites_with_epg(
+            favorites, epg_cache, epg_fuzzy_match, epg_fuzzy_threshold
+        )
+        if fav_changed:
+            save_favorites(favorites_file, favorites)
         favorites_set = {f.url for f in favorites}
         if content_mode == "tv":
             if content_mode == "tv":
@@ -1648,6 +1717,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     xtream_tv = parse_bool(config.get("xtream_use_for_tv"))
     if xtream_tv is not None:
         xtream_use_for_tv = xtream_tv
+    epg_fuzzy_match = False
+    epg_fuzzy = parse_bool(config.get("epg_fuzzy_match"))
+    if epg_fuzzy is not None:
+        epg_fuzzy_match = epg_fuzzy
+    epg_fuzzy_threshold = 0.85
+    try:
+        epg_fuzzy_threshold = float(config.get("epg_fuzzy_threshold", 0.85))
+    except (TypeError, ValueError):
+        epg_fuzzy_threshold = 0.85
     if args.epg_url:
         epg_url = args.epg_url
     if args.source_url:
@@ -1678,6 +1756,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         xtream_username=xtream_username,
         xtream_password=xtream_password,
         xtream_use_for_tv=xtream_use_for_tv,
+        epg_fuzzy_match=epg_fuzzy_match,
+        epg_fuzzy_threshold=epg_fuzzy_threshold,
     )
     save_config(args.config, {"show_help_panel": show_help_panel})
     return 0
