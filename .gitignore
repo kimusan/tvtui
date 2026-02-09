@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Logs
+*.log
+
+# Local data
+*.m3u
+*.m3u8
+*.xml
+*.tsv
+
+# Backups
+*.bck
+
+# OS/editor
+.DS_Store
+
