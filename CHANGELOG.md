@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.0 - 2026-02-09
+
+- TBD
+
 ## 2.1.0 - 2026-01-19
 
 - Add TV source toggle (m3u/xtream/both) with per-source EPG and source tags.

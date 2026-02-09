@@ -18,7 +18,7 @@ import difflib
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 DEFAULT_EPG_URL = "https://raw.githubusercontent.com/doms9/iptv/refs/heads/default/EPG/TV.xml"
 DEFAULT_BASE_M3U_URL = "https://s.id/d9Base"
