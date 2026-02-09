@@ -34,6 +34,7 @@ class Channel:
     url: str
     tvg_id: str
     kind: str = "live"
+    source: str = "m3u"
 
 
 @dataclass(frozen=True)
@@ -59,14 +60,23 @@ def ensure_dirs(config_dir: str, cache_dir: str) -> None:
     os.makedirs(cache_dir, exist_ok=True)
 
 
-def config_paths() -> Tuple[str, str, str, str, str]:
+def config_paths() -> Tuple[str, str, str, str, str, str]:
     config_dir = os.path.expanduser("~/.config/tvtui")
     cache_dir = os.path.expanduser("~/.cache/tvtui")
     favorites_file = os.path.join(config_dir, "favorites.tsv")
     history_file = os.path.join(config_dir, "history.log")
-    epg_cache = os.path.join(config_dir, "epg.xml")
+    epg_cache_m3u = os.path.join(config_dir, "epg_m3u.xml")
+    epg_cache_xtream = os.path.join(config_dir, "epg_xtream.xml")
     channels_cache = os.path.join(cache_dir, "channels.json")
-    return config_dir, cache_dir, favorites_file, history_file, epg_cache, channels_cache
+    return (
+        config_dir,
+        cache_dir,
+        favorites_file,
+        history_file,
+        epg_cache_m3u,
+        epg_cache_xtream,
+        channels_cache,
+    )
 
 
 def http_get(url: str, timeout: int = 30) -> bytes:
@@ -275,7 +285,7 @@ def parse_m3u(content: str) -> Iterable[Channel]:
             if m_id:
                 tvg_id = m_id.group(1)
         elif line.startswith("http") and name:
-            yield Channel(name=name, url=line, tvg_id=tvg_id)
+            yield Channel(name=name, url=line, tvg_id=tvg_id, source="m3u")
             name = ""
             tvg_id = ""
 
@@ -325,21 +335,25 @@ def get_fallback_channels() -> List[Channel]:
             name="France 24",
             url="https://static.france24.com/live/F24_EN_LO_HLS/live_web.m3u8",
             tvg_id="",
+            source="m3u",
         ),
         Channel(
             name="CBS News",
             url="https://cbsn-us.cbsnstream.cbsnews.com/out/v1/55a8648e8f134e82a470f83d562deeca/master.m3u8",
             tvg_id="",
+            source="m3u",
         ),
         Channel(
             name="Red Bull TV",
             url="https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master.m3u8",
             tvg_id="",
+            source="m3u",
         ),
         Channel(
             name="Pluto TV Movies",
             url="https://service-stitcher.clusters.pluto.tv/stitch/hls/channel/5cb0cae7a461406ffe3f5213/master.m3u8",
             tvg_id="",
+            source="m3u",
         ),
     ]
 
@@ -425,7 +439,9 @@ def xtream_get_streams(
             series_id = str(row.get("series_id", "")).strip()
             if not series_id:
                 continue
-            channels.append(Channel(name=name, url="", tvg_id=series_id, kind="series"))
+            channels.append(
+                Channel(name=name, url="", tvg_id=series_id, kind="series", source="xtream")
+            )
         else:
             stream_id = str(row.get("stream_id", "")).strip()
             if not stream_id:
@@ -433,7 +449,9 @@ def xtream_get_streams(
             ext = str(row.get("container_extension", "")).strip()
             url = xtream_stream_url(base_url, username, password, kind, stream_id, ext)
             tvg_id = str(row.get("epg_channel_id", "")).strip() if kind == "live" else ""
-            channels.append(Channel(name=name, url=url, tvg_id=tvg_id, kind=kind))
+            channels.append(
+                Channel(name=name, url=url, tvg_id=tvg_id, kind=kind, source="xtream")
+            )
     return channels, ""
 
 
@@ -475,7 +493,7 @@ def load_favorites(favorites_file: str) -> List[Channel]:
                 name = parts[0]
                 url = parts[1]
                 tvg_id = parts[2] if len(parts) > 2 else ""
-                favorites.append(Channel(name=name, url=url, tvg_id=tvg_id))
+                favorites.append(Channel(name=name, url=url, tvg_id=tvg_id, source="m3u"))
     return favorites
 
 
@@ -563,7 +581,22 @@ class Player:
         self.proc = None
 
 
-def format_program(programs: Dict[str, Program], channel: Channel) -> str:
+def program_map_for_channel(
+    programs_m3u: Dict[str, Program],
+    programs_xtream: Dict[str, Program],
+    channel: Channel,
+) -> Dict[str, Program]:
+    if channel.source == "xtream":
+        return programs_xtream
+    return programs_m3u
+
+
+def format_program(
+    programs_m3u: Dict[str, Program],
+    programs_xtream: Dict[str, Program],
+    channel: Channel,
+) -> str:
+    programs = program_map_for_channel(programs_m3u, programs_xtream, channel)
     if channel.tvg_id and channel.tvg_id in programs:
         return programs[channel.tvg_id].title
     return "Live Programming"
@@ -605,11 +638,14 @@ def tag_color(category_key: str) -> int:
 
 
 def program_listing(
-    epg_index: Dict[str, List[Program]], channel: Channel
+    epg_index_m3u: Dict[str, List[Program]],
+    epg_index_xtream: Dict[str, List[Program]],
+    channel: Channel,
 ) -> List[Tuple[str, str, str, str]]:
     if channel.kind != "live":
         label = "VOD" if channel.kind == "movie" else "SER"
         return [(label, "--:--", channel.name, "")]
+    epg_index = epg_index_xtream if channel.source == "xtream" else epg_index_m3u
     if not channel.tvg_id or channel.tvg_id not in epg_index:
         return [("NOW", "--:--", "Live Programming", "")]
     now = dt.datetime.now(dt.timezone.utc)
@@ -664,8 +700,10 @@ def apply_sort(
 def render_screen(
     stdscr: "curses._CursesWindow",
     channels: List[Channel],
-    programs: Dict[str, Program],
-    epg_index: Dict[str, List[Program]],
+    programs_m3u: Dict[str, Program],
+    programs_xtream: Dict[str, Program],
+    epg_index_m3u: Dict[str, List[Program]],
+    epg_index_xtream: Dict[str, List[Program]],
     favorites_set: set,
     selected_index: int,
     top_index: int,
@@ -678,6 +716,7 @@ def render_screen(
     status_message: str,
     sort_mode: str,
     content_mode: str,
+    tv_source_mode: str,
 ) -> None:
     stdscr.erase()
     height, width = stdscr.getmaxyx()
@@ -685,9 +724,11 @@ def render_screen(
     show_help_panel = help_visible and width >= help_width + 20
     list_width = width - help_width - 1 if show_help_panel else width
     search_label = "search" if search_mode else "nav"
+    source_label = tv_source_mode if content_mode == "tv" else "-"
     header = (
         f"tvTUI {VERSION} | view: {mode} | content: {content_mode} | "
-        f"sort: {sort_mode} | channels: {len(channels)} | {search_label}: {query}"
+        f"source: {source_label} | sort: {sort_mode} | "
+        f"channels: {len(channels)} | {search_label}: {query}"
     )
     if curses.has_colors():
         stdscr.attron(curses.color_pair(8))
@@ -710,7 +751,10 @@ def render_screen(
         chan = channels[chan_index]
         fav_mark = "*" if chan.url in favorites_set else " "
         label, category_key = category_label(chan.name, use_emoji_tags)
-        line = f"[{fav_mark}] {label} {chan.name}"
+        source_tag = ""
+        if content_mode == "tv" and tv_source_mode == "both":
+            source_tag = "[XT] " if chan.source == "xtream" else "[M3U] "
+        line = f"[{fav_mark}] {source_tag}{label} {chan.name}"
         if chan_index == selected_index:
             stdscr.attron(curses.A_REVERSE)
             stdscr.addnstr(list_top + idx, 0, line, list_width - 1)
@@ -758,7 +802,7 @@ def render_screen(
             )
         if list_bottom + 3 < height:
             stdscr.addnstr(list_bottom + 3, 0, "EPG:", list_width - 1, curses.A_BOLD)
-        epg_lines = program_listing(epg_index, selected)
+        epg_lines = program_listing(epg_index_m3u, epg_index_xtream, selected)
         desc_width = min(60, max(24, list_width // 2))
         list_box_width = list_width - desc_width - 1
         if list_box_width < 22:
@@ -811,7 +855,7 @@ def render_screen(
             stdscr.addnstr(
                 key_row,
                 0,
-                "Keys: Enter=play  F=favorite  f=favs  c=cat  m=mode  s=sort  r=refresh  t=subs  /=search  \u2190/\u2192 details  Esc=back  q=quit",
+                "Keys: Enter=play  F=favorite  f=favs  c=cat  m=mode  v=source  s=sort  r=refresh  t=subs  /=search  \u2190/\u2192 details  Esc=back  q=quit",
                 list_width - 1,
             )
     else:
@@ -832,6 +876,7 @@ def render_screen(
             "f   favorites",
             "c   categories",
             "m   content mode",
+            "v   tv source",
             "s   sort",
             "r   refresh",
             "t   subtitles",
@@ -908,13 +953,18 @@ def render_splash(stdscr: "curses._CursesWindow", message: str, spinner_char: st
     stdscr.refresh()
 
 
-def filter_channels(channels: List[Channel], query: str, programs: Dict[str, Program]) -> List[Channel]:
+def filter_channels(
+    channels: List[Channel],
+    query: str,
+    programs_m3u: Dict[str, Program],
+    programs_xtream: Dict[str, Program],
+) -> List[Channel]:
     if not query:
         return channels
     query = query.lower()
     filtered = []
     for chan in channels:
-        program = format_program(programs, chan)
+        program = format_program(programs_m3u, programs_xtream, chan)
         if query in chan.name.lower() or query in program.lower():
             filtered.append(chan)
     return filtered
@@ -991,9 +1041,11 @@ def run_tui(
     categories_only: bool,
     favorites_file: str,
     history_file: str,
-    epg_cache: str,
+    epg_cache_m3u: str,
+    epg_cache_xtream: str,
     channels_cache: str,
-    epg_url: str,
+    epg_url_m3u: str,
+    epg_url_xtream: str,
     base_m3u_url: str,
     streamed_base: str,
     use_emoji_tags: bool,
@@ -1006,11 +1058,13 @@ def run_tui(
     xtream_use_for_tv: bool,
     epg_fuzzy_match: bool,
     epg_fuzzy_threshold: float,
-) -> bool:
+    tv_source_mode: str,
+) -> Tuple[bool, str]:
     player = Player(player_config)
-    result = {"help_visible": show_help_panel}
+    result = {"help_visible": show_help_panel, "tv_source_mode": tv_source_mode}
 
     def tui(stdscr: "curses._CursesWindow") -> None:
+        nonlocal tv_source_mode
         curses.curs_set(0)
         if curses.has_colors():
             curses.start_color()
@@ -1037,6 +1091,9 @@ def run_tui(
         if not xtream_enabled:
             content_modes = ["tv"]
         content_mode = "tv"
+        tv_source_modes = ["both", "m3u", "xtream"]
+        if tv_source_mode not in tv_source_modes:
+            tv_source_mode = "both"
         spinner = ["|", "/", "-", "\\"]
         filtered: List[Channel] = []
         favorites_set: set = set()
@@ -1083,8 +1140,10 @@ def run_tui(
                 render_screen(
                     stdscr,
                     filtered,
-                    programs,
-                    epg_index,
+                    programs_m3u,
+                    programs_xtream,
+                    epg_index_m3u,
+                    epg_index_xtream,
                     favorites_set,
                     selected_index,
                     top_index,
@@ -1097,6 +1156,7 @@ def run_tui(
                     status_message,
                     sort_mode,
                     content_mode,
+                    tv_source_mode,
                 )
                 time.sleep(0.1)
                 i += 1
@@ -1114,37 +1174,79 @@ def run_tui(
             mode = "categories"
 
         def initial_load():
-            ok, err = update_epg_cache(epg_cache, epg_url)
-            programs = build_program_map(epg_cache)
-            epg_index = build_epg_index(epg_cache)
-            if content_mode == "tv" and xtream_enabled and xtream_use_for_tv:
-                channels, chan_err = xtream_get_streams(
-                    xtream_base_url, xtream_username, xtream_password, "live"
+            ok_m3u, err_m3u = update_epg_cache(epg_cache_m3u, epg_url_m3u)
+            programs_m3u = build_program_map(epg_cache_m3u)
+            epg_index_m3u = build_epg_index(epg_cache_m3u)
+            ok_xtream, err_xtream = True, ""
+            programs_xtream: Dict[str, Program] = {}
+            epg_index_xtream: Dict[str, List[Program]] = {}
+            if xtream_enabled and epg_url_xtream:
+                ok_xtream, err_xtream = update_epg_cache(
+                    epg_cache_xtream, epg_url_xtream
                 )
-            else:
-                channels, chan_err = get_iptv_channels(channels_cache, base_m3u_url)
-            return ok, err, programs, epg_index, channels, chan_err
+                programs_xtream = build_program_map(epg_cache_xtream)
+                epg_index_xtream = build_epg_index(epg_cache_xtream)
 
-        ok, err, programs, epg_index, channels, chan_err = splash_with_spinner(
-            "Loading", initial_load
-        )
+            channels: List[Channel] = []
+            chan_err = ""
+            if content_mode == "tv":
+                if tv_source_mode in ("both", "m3u"):
+                    m3u_channels, m3u_err = get_iptv_channels(
+                        channels_cache, base_m3u_url
+                    )
+                    channels.extend(m3u_channels)
+                    chan_err = m3u_err or chan_err
+                if tv_source_mode in ("both", "xtream") and xtream_enabled:
+                    xt_channels, xt_err = xtream_get_streams(
+                        xtream_base_url, xtream_username, xtream_password, "live"
+                    )
+                    channels.extend(xt_channels)
+                    chan_err = xt_err or chan_err
+            else:
+                chan_err = ""
+            return (
+                ok_m3u,
+                err_m3u,
+                ok_xtream,
+                err_xtream,
+                programs_m3u,
+                programs_xtream,
+                epg_index_m3u,
+                epg_index_xtream,
+                channels,
+                chan_err,
+            )
+
+        (
+            ok_m3u,
+            err_m3u,
+            ok_xtream,
+            err_xtream,
+            programs_m3u,
+            programs_xtream,
+            epg_index_m3u,
+            epg_index_xtream,
+            channels,
+            chan_err,
+        ) = splash_with_spinner("Loading", initial_load)
         if not channels:
             channels = get_fallback_channels()
             if chan_err:
                 show_popup(stdscr, "Network Error", chan_err)
-        if not ok and err:
-            show_popup(stdscr, "Network Error", err)
+        if not ok_m3u and err_m3u:
+            show_popup(stdscr, "Network Error", err_m3u)
+        if tv_source_mode in ("both", "xtream") and not ok_xtream and err_xtream:
+            show_popup(stdscr, "Network Error", err_xtream)
 
         favorites = load_favorites(favorites_file)
         favorites, fav_changed = repair_favorites_with_epg(
-            favorites, epg_cache, epg_fuzzy_match, epg_fuzzy_threshold
+            favorites, epg_cache_m3u, epg_fuzzy_match, epg_fuzzy_threshold
         )
         if fav_changed:
             save_favorites(favorites_file, favorites)
         favorites_set = {f.url for f in favorites}
-        if content_mode == "tv":
-            if content_mode == "tv":
-                channels = merge_with_favorites(channels, favorites)
+        if content_mode == "tv" and tv_source_mode in ("both", "m3u"):
+            channels = merge_with_favorites(channels, favorites)
         if categories_only:
             selection = select_category(stdscr)
             if selection:
@@ -1154,10 +1256,16 @@ def run_tui(
                     show_popup(stdscr, "Network Error", cat_err)
             mode = "channels"
         filtered = apply_sort(
-            filter_channels(channels, query, programs), sort_mode, use_emoji_tags
+            filter_channels(channels, query, programs_m3u, programs_xtream),
+            sort_mode,
+            use_emoji_tags,
         )
         if favorites_only:
-            filtered = apply_sort(filter_channels(favorites, query, programs), sort_mode, use_emoji_tags)
+            filtered = apply_sort(
+                filter_channels(favorites, query, programs_m3u, programs_xtream),
+                sort_mode,
+                use_emoji_tags,
+            )
             mode = "favorites"
 
         selected_index = 0
@@ -1177,8 +1285,10 @@ def run_tui(
             render_screen(
                 stdscr,
                 filtered,
-                programs,
-                epg_index,
+                programs_m3u,
+                programs_xtream,
+                epg_index_m3u,
+                epg_index_xtream,
                 favorites_set,
                 selected_index,
                 top_index,
@@ -1191,6 +1301,7 @@ def run_tui(
                 status_message,
                 sort_mode,
                 content_mode,
+                tv_source_mode,
             )
             ch = stdscr.get_wch()
             if ch == curses.KEY_RESIZE:
@@ -1248,11 +1359,13 @@ def run_tui(
                 if ch in (curses.KEY_BACKSPACE, "\b", "\x7f"):
                     query = query[:-1]
                     filtered = apply_sort(
-                        filter_channels(channels, query, programs), sort_mode, use_emoji_tags
+                        filter_channels(channels, query, programs_m3u, programs_xtream),
+                        sort_mode,
+                        use_emoji_tags,
                     )
                     if mode == "favorites":
                         filtered = apply_sort(
-                            filter_channels(favorites, query, programs),
+                            filter_channels(favorites, query, programs_m3u, programs_xtream),
                             sort_mode,
                             use_emoji_tags,
                         )
@@ -1264,11 +1377,13 @@ def run_tui(
                 if isinstance(ch, str) and ch.isprintable():
                     query += ch
                     filtered = apply_sort(
-                        filter_channels(channels, query, programs), sort_mode, use_emoji_tags
+                        filter_channels(channels, query, programs_m3u, programs_xtream),
+                        sort_mode,
+                        use_emoji_tags,
                     )
                     if mode == "favorites":
                         filtered = apply_sort(
-                            filter_channels(favorites, query, programs),
+                            filter_channels(favorites, query, programs_m3u, programs_xtream),
                             sort_mode,
                             use_emoji_tags,
                         )
@@ -1279,6 +1394,7 @@ def run_tui(
                 continue
             if ch in ("q", "Q"):
                 result["help_visible"] = help_visible
+                result["tv_source_mode"] = tv_source_mode
                 return
             if ch in ("\n", "\r"):
                 if filtered:
@@ -1320,11 +1436,13 @@ def run_tui(
                 else:
                     mode = "favorites"
                 filtered = apply_sort(
-                    filter_channels(channels, query, programs), sort_mode, use_emoji_tags
+                    filter_channels(channels, query, programs_m3u, programs_xtream),
+                    sort_mode,
+                    use_emoji_tags,
                 )
                 if mode == "favorites":
                     filtered = apply_sort(
-                        filter_channels(favorites, query, programs),
+                        filter_channels(favorites, query, programs_m3u, programs_xtream),
                         sort_mode,
                         use_emoji_tags,
                     )
@@ -1340,11 +1458,11 @@ def run_tui(
                         toggle_favorite(favorites_file, channel)
                     favorites = load_favorites(favorites_file)
                     favorites_set = {f.url for f in favorites}
-                    if content_mode == "tv":
+                    if content_mode == "tv" and tv_source_mode in ("both", "m3u"):
                         channels = merge_with_favorites(channels, favorites)
                     if mode == "favorites":
                         filtered = apply_sort(
-                            filter_channels(favorites, query, programs),
+                            filter_channels(favorites, query, programs_m3u, programs_xtream),
                             sort_mode,
                             use_emoji_tags,
                         )
@@ -1354,19 +1472,19 @@ def run_tui(
                         last_selected_index = 0
                 continue
             if ch in ("c", "C"):
-                if content_mode == "tv" and (not xtream_enabled or not xtream_use_for_tv):
+                if content_mode == "tv" and tv_source_mode == "m3u":
                     selection = select_category(stdscr)
                     if selection:
                         _, cat_id = selection
                         channels, cat_err = get_category_channels(cat_id, streamed_base)
-                        programs = build_program_map(epg_cache)
-                        epg_index = build_epg_index(epg_cache)
+                        programs_m3u = build_program_map(epg_cache_m3u)
+                        epg_index_m3u = build_epg_index(epg_cache_m3u)
                         query = ""
                         mode = "channels"
-                        if content_mode == "tv":
+                        if content_mode == "tv" and tv_source_mode in ("both", "m3u"):
                             channels = merge_with_favorites(channels, favorites)
                         filtered = apply_sort(
-                            filter_channels(channels, query, programs),
+                            filter_channels(channels, query, programs_m3u, programs_xtream),
                             sort_mode,
                             use_emoji_tags,
                         )
@@ -1380,10 +1498,11 @@ def run_tui(
                     if not xtream_enabled:
                         show_popup(stdscr, "Xtream Not Configured", "Add Xtream credentials in config.")
                         continue
+                    cat_kind = content_mode if content_mode != "tv" else "live"
                     cat_items, cat_err = fetch_with_spinner(
                         "Loading categories",
                         lambda: xtream_get_categories(
-                            xtream_base_url, xtream_username, xtream_password, content_mode
+                            xtream_base_url, xtream_username, xtream_password, cat_kind
                         ),
                     )
                     if cat_err:
@@ -1394,13 +1513,14 @@ def run_tui(
                     )
                     if selection:
                         _, cat_id = selection
+                        stream_kind = content_mode if content_mode != "tv" else "live"
                         channels, cat_err = fetch_with_spinner(
                             "Loading streams",
                             lambda: xtream_get_streams(
                                 xtream_base_url,
                                 xtream_username,
                                 xtream_password,
-                                content_mode,
+                                stream_kind,
                                 category_id=cat_id,
                             ),
                         )
@@ -1409,7 +1529,7 @@ def run_tui(
                         query = ""
                         mode = "channels"
                         filtered = apply_sort(
-                            filter_channels(channels, query, programs),
+                            filter_channels(channels, query, programs_m3u, programs_xtream),
                             sort_mode,
                             use_emoji_tags,
                         )
@@ -1419,21 +1539,37 @@ def run_tui(
                         last_selected_index = 0
                 continue
             if ch in ("m", "M"):
-                if not xtream_enabled:
-                    show_popup(stdscr, "Xtream Not Configured", "Add Xtream credentials in config.")
-                    continue
                 current = content_modes.index(content_mode)
                 content_mode = content_modes[(current + 1) % len(content_modes)]
                 status_message = f"Content: {content_mode}"
-                if content_mode == "tv" and xtream_use_for_tv:
-                    channels, chan_err = fetch_with_spinner(
-                        "Loading Xtream TV",
-                        lambda: xtream_get_streams(
-                            xtream_base_url, xtream_username, xtream_password, "live"
-                        ),
-                    )
-                elif content_mode == "tv":
-                    channels, chan_err = get_iptv_channels(channels_cache, base_m3u_url)
+                if content_mode == "tv":
+                    channels = []
+                    chan_err = ""
+                    if tv_source_mode in ("both", "m3u"):
+                        m3u_channels, m3u_err = get_iptv_channels(
+                            channels_cache, base_m3u_url
+                        )
+                        channels.extend(m3u_channels)
+                        chan_err = m3u_err or chan_err
+                    if tv_source_mode in ("both", "xtream"):
+                        if not xtream_enabled:
+                            show_popup(
+                                stdscr,
+                                "Xtream Not Configured",
+                                "Add Xtream credentials in config.",
+                            )
+                        else:
+                            xt_channels, xt_err = fetch_with_spinner(
+                                "Loading Xtream TV",
+                                lambda: xtream_get_streams(
+                                    xtream_base_url,
+                                    xtream_username,
+                                    xtream_password,
+                                    "live",
+                                ),
+                            )
+                            channels.extend(xt_channels)
+                            chan_err = xt_err or chan_err
                 else:
                     channels, chan_err = fetch_with_spinner(
                         "Loading streams",
@@ -1446,7 +1582,61 @@ def run_tui(
                 query = ""
                 mode = "channels"
                 filtered = apply_sort(
-                    filter_channels(channels, query, programs), sort_mode, use_emoji_tags
+                    filter_channels(channels, query, programs_m3u, programs_xtream),
+                    sort_mode,
+                    use_emoji_tags,
+                )
+                selected_index = 0
+                top_index = 0
+                desc_index = 0
+                last_selected_index = 0
+                continue
+            if ch in ("v", "V"):
+                if content_mode != "tv":
+                    show_popup(stdscr, "TV Source", "Switch to TV mode to change source.")
+                    continue
+                if not xtream_enabled and tv_source_mode in ("both", "xtream"):
+                    show_popup(stdscr, "Xtream Not Configured", "Add Xtream credentials in config.")
+                current = tv_source_modes.index(tv_source_mode)
+                tv_source_mode = tv_source_modes[(current + 1) % len(tv_source_modes)]
+                status_message = f"TV Source: {tv_source_mode}"
+                channels = []
+                chan_err = ""
+                if tv_source_mode in ("both", "m3u"):
+                    m3u_channels, m3u_err = get_iptv_channels(
+                        channels_cache, base_m3u_url
+                    )
+                    channels.extend(m3u_channels)
+                    chan_err = m3u_err or chan_err
+                if tv_source_mode in ("both", "xtream"):
+                    if not xtream_enabled:
+                        show_popup(
+                            stdscr,
+                            "Xtream Not Configured",
+                            "Add Xtream credentials in config.",
+                        )
+                    else:
+                        xt_channels, xt_err = fetch_with_spinner(
+                            "Loading Xtream TV",
+                            lambda: xtream_get_streams(
+                                xtream_base_url,
+                                xtream_username,
+                                xtream_password,
+                                "live",
+                            ),
+                        )
+                        channels.extend(xt_channels)
+                        chan_err = xt_err or chan_err
+                if chan_err:
+                    show_popup(stdscr, "Network Error", chan_err)
+                query = ""
+                mode = "channels"
+                if content_mode == "tv" and tv_source_mode in ("both", "m3u"):
+                    channels = merge_with_favorites(channels, favorites)
+                filtered = apply_sort(
+                    filter_channels(channels, query, programs_m3u, programs_xtream),
+                    sort_mode,
+                    use_emoji_tags,
                 )
                 selected_index = 0
                 top_index = 0
@@ -1468,8 +1658,10 @@ def run_tui(
                 render_screen(
                     stdscr,
                     filtered,
-                    programs,
-                    epg_index,
+                    programs_m3u,
+                    programs_xtream,
+                    epg_index_m3u,
+                    epg_index_xtream,
                     favorites_set,
                     selected_index,
                     top_index,
@@ -1482,19 +1674,36 @@ def run_tui(
                     status_message,
                     sort_mode,
                     content_mode,
+                    tv_source_mode,
                 )
-                ok, err = update_epg_cache(epg_cache, epg_url)
-                programs = build_program_map(epg_cache)
-                epg_index = build_epg_index(epg_cache)
-                if content_mode == "tv" and xtream_enabled and xtream_use_for_tv:
-                    channels, chan_err = fetch_with_spinner(
-                        "Loading Xtream TV",
-                        lambda: xtream_get_streams(
-                            xtream_base_url, xtream_username, xtream_password, "live"
-                        ),
+                ok_m3u, err_m3u = update_epg_cache(epg_cache_m3u, epg_url_m3u)
+                programs_m3u = build_program_map(epg_cache_m3u)
+                epg_index_m3u = build_epg_index(epg_cache_m3u)
+                ok_xtream, err_xtream = True, ""
+                if xtream_enabled and epg_url_xtream:
+                    ok_xtream, err_xtream = update_epg_cache(
+                        epg_cache_xtream, epg_url_xtream
                     )
-                elif content_mode == "tv":
-                    channels, chan_err = get_iptv_channels(channels_cache, base_m3u_url)
+                    programs_xtream = build_program_map(epg_cache_xtream)
+                    epg_index_xtream = build_epg_index(epg_cache_xtream)
+                channels = []
+                chan_err = ""
+                if content_mode == "tv":
+                    if tv_source_mode in ("both", "m3u"):
+                        m3u_channels, m3u_err = get_iptv_channels(
+                            channels_cache, base_m3u_url
+                        )
+                        channels.extend(m3u_channels)
+                        chan_err = m3u_err or chan_err
+                    if tv_source_mode in ("both", "xtream") and xtream_enabled:
+                        xt_channels, xt_err = fetch_with_spinner(
+                            "Loading Xtream TV",
+                            lambda: xtream_get_streams(
+                                xtream_base_url, xtream_username, xtream_password, "live"
+                            ),
+                        )
+                        channels.extend(xt_channels)
+                        chan_err = xt_err or chan_err
                 else:
                     channels, chan_err = fetch_with_spinner(
                         "Loading streams",
@@ -1504,17 +1713,17 @@ def run_tui(
                     )
                 if not channels:
                     channels = get_fallback_channels()
-                if content_mode == "tv":
+                if content_mode == "tv" and tv_source_mode in ("both", "m3u"):
                     channels = merge_with_favorites(channels, favorites)
                 if mode == "favorites":
                     filtered = apply_sort(
-                        filter_channels(favorites, query, programs),
+                        filter_channels(favorites, query, programs_m3u, programs_xtream),
                         sort_mode,
                         use_emoji_tags,
                     )
                 else:
                     filtered = apply_sort(
-                        filter_channels(channels, query, programs),
+                        filter_channels(channels, query, programs_m3u, programs_xtream),
                         sort_mode,
                         use_emoji_tags,
                     )
@@ -1523,8 +1732,10 @@ def run_tui(
                 desc_index = 0
                 last_selected_index = 0
                 status_message = ""
-                if not ok and err:
-                    show_popup(stdscr, "Network Error", err)
+                if not ok_m3u and err_m3u:
+                    show_popup(stdscr, "Network Error", err_m3u)
+                if tv_source_mode in ("both", "xtream") and not ok_xtream and err_xtream:
+                    show_popup(stdscr, "Network Error", err_xtream)
                 elif chan_err:
                     show_popup(stdscr, "Network Error", chan_err)
                 continue
@@ -1573,7 +1784,7 @@ def run_tui(
                 continue
 
     curses.wrapper(tui)
-    return result["help_visible"]
+    return result["help_visible"], result["tv_source_mode"]
 
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
@@ -1663,15 +1874,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"tvTUI {VERSION}")
         return 0
 
-    config_dir, cache_dir, favorites_file, history_file, epg_cache, channels_cache = config_paths()
+    (
+        config_dir,
+        cache_dir,
+        favorites_file,
+        history_file,
+        epg_cache_m3u,
+        epg_cache_xtream,
+        channels_cache,
+    ) = config_paths()
     ensure_dirs(config_dir, cache_dir)
 
     if args.clear_cache:
-        clear_cache(cache_dir, epg_cache)
+        clear_cache(cache_dir, epg_cache_m3u)
+        if os.path.exists(epg_cache_xtream):
+            os.remove(epg_cache_xtream)
         return 0
 
     config = load_config(args.config)
-    epg_url = config.get("epg_url", DEFAULT_EPG_URL)
+    epg_url_m3u = config.get("epg_url_m3u", config.get("epg_url", DEFAULT_EPG_URL))
     base_m3u_url = config.get("source_url", DEFAULT_BASE_M3U_URL)
     streamed_base = config.get("streamed_base", DEFAULT_STREAMED_BASE)
     show_help_panel = True
@@ -1717,6 +1938,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     xtream_tv = parse_bool(config.get("xtream_use_for_tv"))
     if xtream_tv is not None:
         xtream_use_for_tv = xtream_tv
+    epg_url_xtream = str(config.get("epg_url_xtream", "")).strip()
+    if not epg_url_xtream and xtream_base_url and xtream_username and xtream_password:
+        epg_url_xtream = (
+            f"{xtream_base_url.rstrip('/')}/xmltv.php?username="
+            f"{xtream_username}&password={xtream_password}"
+        )
+    tv_source_mode = str(config.get("tv_source_mode", "both")).lower()
+    if tv_source_mode not in ("both", "m3u", "xtream"):
+        tv_source_mode = "both"
+    if not xtream_use_for_tv:
+        tv_source_mode = "m3u"
     epg_fuzzy_match = False
     epg_fuzzy = parse_bool(config.get("epg_fuzzy_match"))
     if epg_fuzzy is not None:
@@ -1727,7 +1959,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (TypeError, ValueError):
         epg_fuzzy_threshold = 0.85
     if args.epg_url:
-        epg_url = args.epg_url
+        epg_url_m3u = args.epg_url
     if args.source_url:
         base_m3u_url = args.source_url
     if args.streamed_base:
@@ -1737,15 +1969,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.no_emoji_tags:
         use_emoji_tags = False
 
-    show_help_panel = run_tui(
+    show_help_panel, tv_source_mode = run_tui(
         initial_query=args.query,
         favorites_only=args.favorites,
         categories_only=args.categories,
         favorites_file=favorites_file,
         history_file=history_file,
-        epg_cache=epg_cache,
+        epg_cache_m3u=epg_cache_m3u,
+        epg_cache_xtream=epg_cache_xtream,
         channels_cache=channels_cache,
-        epg_url=epg_url,
+        epg_url_m3u=epg_url_m3u,
+        epg_url_xtream=epg_url_xtream,
         base_m3u_url=base_m3u_url,
         streamed_base=streamed_base,
         use_emoji_tags=use_emoji_tags,
@@ -1758,8 +1992,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         xtream_use_for_tv=xtream_use_for_tv,
         epg_fuzzy_match=epg_fuzzy_match,
         epg_fuzzy_threshold=epg_fuzzy_threshold,
+        tv_source_mode=tv_source_mode,
     )
-    save_config(args.config, {"show_help_panel": show_help_panel})
+    save_config(args.config, {"show_help_panel": show_help_panel, "tv_source_mode": tv_source_mode})
     return 0
 
 

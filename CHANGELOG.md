@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0 - 2026-01-19
+
+- Add TV source toggle (m3u/xtream/both) with per-source EPG and source tags.
+- Add optional EPG fuzzy matching to repair missing favorite IDs.
+- Fix Xtream series episode fetching and add loading indicators.
+
 ## 2.0.0 - 2026-01-19
 
 - Add splash screen and loading spinner.
